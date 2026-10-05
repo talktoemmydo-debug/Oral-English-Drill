@@ -4,9 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0e1726">
+<!-- iOS Web App support -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Vowel Quest">
+<!-- Android / Chrome / PC support -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="application-name" content="Vowel Quest">
+<meta name="description" content="Vowel Quest — British English Pronunciation & Oral Drill Game">
 <title>Vowel Quest — British Pronunciation Game</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230e1726'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='%232dd4bf' font-family='sans-serif'%3E%C9%99%3C/text%3E%3C/svg%3E">
 <style>
@@ -73,8 +78,8 @@ button{font-family:inherit;cursor:pointer;touch-action:manipulation}
 .opt.correct{border-color:var(--good);background:#12331f}
 .opt.wrong{border-color:var(--bad);background:#3a1620}
 .opt.dim{opacity:.5}
-.tbar{height:9px;background:#16223a;border-radius:5px;overflow:hidden;margin-top:18px}
-.tfill{height:100%;width:100%;background:var(--good)}
+.tbar{height:9px;background:#16223a;border-radius:5px;overflow:hidden;margin-top:18px;position:relative}
+.tfill{height:100%;width:100%;background:var(--good);transform-origin:left center;transform:scaleX(1);will-change:transform}
 .qhead{display:flex;justify-content:space-between;align-items:center;margin:2px 0 10px}
 .scorechip{font-weight:800;font-size:16px}
 .streakchip{font-weight:800;font-size:15px;color:var(--amber)}
@@ -251,67 +256,269 @@ try{const p=JSON.parse(store.get('vq_prog')||'{}');if(p&&p.levels)PROG=p;}catch(
 function saveProg(){store.set('vq_prog',JSON.stringify(PROG));}
 function wobj(w){return WORDS.find(x=>x[0]===w);}
 
-/* ---------------- audio ---------------- */
-let AC=null;
-function ac(){if(!AC){try{AC=new (window.AudioContext||window.webkitAudioContext)();}catch(e){}}
-  if(AC&&AC.state==='suspended'){AC.resume();}return AC;}
-function blip(kind){
-  try{
-    const a=ac();if(!a)return;const t=a.currentTime;
-    const o=a.createOscillator(),g=a.createGain();o.connect(g);g.connect(a.destination);
-    if(kind==='ok'){o.type='sine';o.frequency.setValueAtTime(660,t);o.frequency.setValueAtTime(990,t+.09);
-      g.gain.setValueAtTime(.12,t);g.gain.exponentialRampToValueAtTime(.001,t+.28);o.start(t);o.stop(t+.3);}
-    else if(kind==='bad'){o.type='sawtooth';o.frequency.setValueAtTime(170,t);
-      o.frequency.linearRampToValueAtTime(80,t+.32);g.gain.setValueAtTime(.10,t);
-      g.gain.exponentialRampToValueAtTime(.001,t+.34);o.start(t);o.stop(t+.36);}
-    else{o.type='sine';o.frequency.setValueAtTime(520,t);g.gain.setValueAtTime(.07,t);
-      g.gain.exponentialRampToValueAtTime(.001,t+.12);o.start(t);o.stop(t+.14);}
-  }catch(e){}
+/* ---------------- audio engine ---------------- */
+let AC = null;
+function ac() {
+  if (!AC) {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) AC = new AudioCtx();
+    } catch (e) {}
+  }
+  if (AC && AC.state === 'suspended') {
+    AC.resume().catch(function(){});
+  }
+  return AC;
 }
-let VOICES=[];
-function loadVoices(){try{VOICES=speechSynthesis.getVoices()||[];}catch(e){}}
-if('speechSynthesis' in window){
+
+function blip(kind) {
+  try {
+    const a = ac();
+    if (!a) return;
+    const t = a.currentTime;
+    const o = a.createOscillator(), g = a.createGain();
+    o.connect(g);
+    g.connect(a.destination);
+    if (kind === 'ok') {
+      o.type = 'sine';
+      o.frequency.setValueAtTime(660, t);
+      o.frequency.setValueAtTime(990, t + 0.09);
+      g.gain.setValueAtTime(0.12, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      o.start(t);
+      o.stop(t + 0.3);
+    } else if (kind === 'bad') {
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(170, t);
+      o.frequency.linearRampToValueAtTime(80, t + 0.32);
+      g.gain.setValueAtTime(0.10, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+      o.start(t);
+      o.stop(t + 0.36);
+    } else {
+      o.type = 'sine';
+      o.frequency.setValueAtTime(520, t);
+      g.gain.setValueAtTime(0.07, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+      o.start(t);
+      o.stop(t + 0.14);
+    }
+  } catch (e) {}
+}
+
+/* Web Audio pre-decoding & cache (zero lag on PC/Android/iOS) */
+const AUDIO_BUFFERS = {};
+const AUDIO_ELEMENTS = {};
+
+function base64ToArrayBuffer(base64) {
+  const raw = base64.replace(/^data:audio\/[^;]+;base64,/, '');
+  const binary = window.atob(raw);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+function decodeStudioBuffer(key) {
+  if (AUDIO_BUFFERS[key]) return Promise.resolve(AUDIO_BUFFERS[key]);
+  if (!AUDIO[key]) return Promise.resolve(null);
+  const ctx = ac();
+  if (!ctx || !ctx.decodeAudioData) return Promise.resolve(null);
+  try {
+    const arrayBuf = base64ToArrayBuffer(AUDIO[key]);
+    return new Promise(function(resolve) {
+      ctx.decodeAudioData(arrayBuf, function(decoded) {
+        AUDIO_BUFFERS[key] = decoded;
+        resolve(decoded);
+      }, function() {
+        resolve(null);
+      });
+    });
+  } catch (e) {
+    return Promise.resolve(null);
+  }
+}
+
+function playAudioBuffer(buf, slow) {
+  const ctx = ac();
+  if (!ctx) return false;
+  try {
+    if (ctx.state === 'suspended') ctx.resume().catch(function(){});
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const rate = (slow ? 0.7 : 1) * (SETTINGS.rate || 1);
+    src.playbackRate.setValueAtTime(rate, ctx.currentTime);
+    src.connect(ctx.destination);
+    src.start(0);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function getAudioElement(key) {
+  if (!AUDIO_ELEMENTS[key] && AUDIO[key]) {
+    try {
+      const el = new Audio(AUDIO[key]);
+      el.preload = 'auto';
+      AUDIO_ELEMENTS[key] = el;
+    } catch (e) {}
+  }
+  return AUDIO_ELEMENTS[key];
+}
+
+function playAudioElement(key, slow) {
+  const el = getAudioElement(key);
+  if (!el) return false;
+  try {
+    el.pause();
+    el.currentTime = 0;
+    el.playbackRate = (slow ? 0.7 : 1) * (SETTINGS.rate || 1);
+    const p = el.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(function(){});
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/* ---------------- Speech Synthesis cross-platform ---------------- */
+let VOICES = [];
+function loadVoices() {
+  if (!('speechSynthesis' in window)) return;
+  try {
+    const list = speechSynthesis.getVoices();
+    if (list && list.length > 0) {
+      VOICES = list;
+    }
+  } catch (e) {}
+}
+
+if ('speechSynthesis' in window) {
   loadVoices();
-  try{speechSynthesis.onvoiceschanged=loadVoices;}catch(e){}
+  if (typeof speechSynthesis.addEventListener === 'function') {
+    speechSynthesis.addEventListener('voiceschanged', loadVoices);
+  } else {
+    speechSynthesis.onvoiceschanged = loadVoices;
+  }
 }
-function gbVoice(){
-  const vs=VOICES.filter(v=>/^en[-_]GB/i.test(v.lang)||/British|United Kingdom|Daniel|Kate|Serena|Arthur/i.test(v.name));
-  return vs[0]||(VOICES.find(v=>/^en/i.test(v.lang))||null);
+
+function gbVoice() {
+  if (!VOICES.length) loadVoices();
+  // 1. Look for British / UK voice
+  const gb = VOICES.filter(function(v) {
+    const l = (v.lang || '').replace('_', '-').toLowerCase();
+    const n = (v.name || '').toLowerCase();
+    return l === 'en-gb' || l === 'en-uk' || n.includes('british') || n.includes('united kingdom') ||
+           n.includes('daniel') || n.includes('kate') || n.includes('serena') || n.includes('arthur') ||
+           n.includes('george') || n.includes('hazel') || n.includes('susan') || n.includes('oliver') ||
+           n.includes('uk english') || n.includes('en-gb');
+  });
+  if (gb.length > 0) return gb[0];
+
+  // 2. Fallback to any English voice (en-US, en-AU, etc.)
+  const anyEn = VOICES.filter(function(v) {
+    const l = (v.lang || '').toLowerCase();
+    return l.startsWith('en');
+  });
+  if (anyEn.length > 0) return anyEn[0];
+
+  // 3. Fallback to default or first available voice
+  return VOICES.find(function(v) { return v.default; }) || VOICES[0] || null;
 }
-function canSpeak(w){
-  const key=String(w).toLowerCase();
-  if(SETTINGS.voice!=='browser'&&AUDIO[key])return true;
+
+let activeUtterance = null;
+function speakSynthesis(w, slow) {
+  if (!('speechSynthesis' in window)) return;
+  try {
+    // Only cancel if actively speaking to prevent Chromium Android bug
+    if (speechSynthesis.speaking || speechSynthesis.pending) {
+      speechSynthesis.cancel();
+    }
+    const cleanWord = String(w).replace(/\./g, '').trim();
+    const u = new SpeechSynthesisUtterance(cleanWord);
+    u.lang = 'en-GB';
+    const v = gbVoice();
+    if (v) {
+      u.voice = v;
+      if (v.lang) u.lang = v.lang;
+    }
+    u.rate = (slow ? 0.65 : 0.92) * (SETTINGS.rate || 1);
+    u.pitch = 1.0;
+    u.volume = 1.0;
+
+    // Retain global reference to avoid V8 garbage collection mid-speech on Android/PC
+    activeUtterance = u;
+    u.onend = function() { if (activeUtterance === u) activeUtterance = null; };
+    u.onerror = function() { if (activeUtterance === u) activeUtterance = null; };
+
+    if (speechSynthesis.paused) {
+      speechSynthesis.resume();
+    }
+    speechSynthesis.speak(u);
+  } catch (e) {
+    activeUtterance = null;
+  }
+}
+
+function canSpeak(w) {
+  const key = String(w).toLowerCase();
+  if (SETTINGS.voice !== 'browser' && AUDIO[key]) return true;
   return ('speechSynthesis' in window);
 }
-function speakWord(w,slow){
-  if(!w)return;
-  const key=String(w).toLowerCase();
-  if(SETTINGS.voice!=='browser'&&AUDIO[key]){
-    try{if('speechSynthesis' in window)speechSynthesis.cancel();}catch(e){}
-    try{
-      const a=new Audio(AUDIO[key]);
-      a.playbackRate=(slow?0.7:1)*(SETTINGS.rate||1);
-      a.play().catch(function(){});
+
+function speakWord(w, slow) {
+  if (!w) return;
+  const key = String(w).toLowerCase().trim();
+
+  if (SETTINGS.voice !== 'browser' && AUDIO[key]) {
+    // 1. Try instant Web Audio buffer
+    if (AUDIO_BUFFERS[key]) {
+      playAudioBuffer(AUDIO_BUFFERS[key], slow);
       return;
-    }catch(e){}
+    }
+    // 2. Decode on demand or fallback to HTMLAudioElement
+    decodeStudioBuffer(key).then(function(buf) {
+      if (buf) {
+        playAudioBuffer(buf, slow);
+      } else {
+        playAudioElement(key, slow);
+      }
+    }).catch(function() {
+      playAudioElement(key, slow);
+    });
+    return;
   }
-  try{
-    if(!('speechSynthesis' in window))return;
-    speechSynthesis.cancel();
-    const u=new SpeechSynthesisUtterance(String(w).replace(/\./g,''));
-    u.lang='en-GB';const v=gbVoice();if(v)u.voice=v;
-    u.rate=(slow?0.65:0.92)*(SETTINGS.rate||1);
-    speechSynthesis.speak(u);
-  }catch(e){}
+
+  // Fallback to cross-platform speech synthesis
+  speakSynthesis(w, slow);
 }
-/* unlock audio on first touch (iOS) */
-(function(){
-  let primed=false;
-  function prime(){if(primed)return;primed=true;try{ac();}catch(e){}
-    try{if('speechSynthesis' in window){const u=new SpeechSynthesisUtterance(' ');u.volume=0;speechSynthesis.speak(u);}}catch(e){}}
-  document.addEventListener('touchend',prime,{once:true,passive:true});
-  document.addEventListener('click',prime,{once:true});
-})();
+
+/* Universal Audio Unlock & Voice Pre-loader on user gesture */
+let audioPrimed = false;
+function primeAudio() {
+  if (audioPrimed) return;
+  audioPrimed = true;
+  try {
+    const ctx = ac();
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(function(){});
+  } catch (e) {}
+  loadVoices();
+  // Decode studio recordings in background for instant 0ms response
+  try {
+    Object.keys(AUDIO).forEach(function(k) {
+      decodeStudioBuffer(k);
+    });
+  } catch (e) {}
+}
+
+['pointerdown', 'touchstart', 'touchend', 'click', 'keydown'].forEach(function(evt) {
+  document.addEventListener(evt, primeAudio, { passive: true, once: false });
+});
 
 /* ---------------- question builders ---------------- */
 function qSound(word,vowelsAllowed){
@@ -407,10 +614,12 @@ function buildQuiz(cfg){
 /* ---------------- game engine ---------------- */
 let GAME=null;
 function startQuick(id){
+  primeAudio();
   const cfg=QUICK.find(function(q){return q.id===id;});
   startGame({cfg:cfg,career:false,id:id,title:cfg.name});
 }
 function startLevel(id){
+  primeAudio();
   const L=LEVELS.find(function(x){return x.id===id;});
   startGame({cfg:L,career:true,id:id,title:L.name});
 }
@@ -454,18 +663,26 @@ function renderQuestion(){
     '<div id="fb"></div>';
   g.deadline=Date.now()+g.cfg.time*1000;
   tick();
-  if(q.speak){g.tmo=setTimeout(function(){if(GAME&&!GAME.answered)speakWord(q.speak);},420);}
+  if(q.speak){g.tmo=setTimeout(function(){if(GAME&&!GAME.answered)speakWord(q.speak);},360);}
 }
+
 function tick(){
   const g=GAME;if(!g||g.answered)return;
   const left=(g.deadline-Date.now())/1000;
   const frac=Math.max(0,Math.min(1,left/g.cfg.time));
   const f=document.getElementById('tfill');
-  if(f){f.style.width=(frac*100)+'%';
-    f.style.background=frac>0.5?'var(--good)':(frac>0.25?'var(--amber)':'var(--bad)');}
+  if(f){
+    f.style.transform='scaleX('+frac+')';
+    const color = frac>0.5?'var(--good)':(frac>0.25?'var(--amber)':'var(--bad)');
+    if (f._lastColor !== color) {
+      f.style.background = color;
+      f._lastColor = color;
+    }
+  }
   if(left<=0){answer(-1);return;}
   g.raf=requestAnimationFrame(tick);
 }
+
 function answer(i){
   const g=GAME;if(!g||g.answered)return;
   g.answered=true;cancelAnimationFrame(g.raf);clearTimeout(g.tmo);
@@ -497,6 +714,7 @@ function answer(i){
     '<div style="margin-top:10px"><button class="b '+(ok?'primary':'')+'" onclick="nextQ()">Next \u2192</button></div></div>';
   g.tmo=setTimeout(nextQ,ok?1400:3000);
 }
+
 function nextQ(){
   const g=GAME;if(!g)return;
   clearTimeout(g.tmo);cancelAnimationFrame(g.raf);
@@ -504,6 +722,7 @@ function nextQ(){
   if(g.i>=g.qs.length){results();return;}
   renderQuestion();
 }
+
 function results(){
   const g=GAME;cancelAnimationFrame(g.raf);clearTimeout(g.tmo);
   const n=g.qs.length,correct=n-g.misses.length,acc=correct/n;
@@ -540,6 +759,7 @@ function results(){
       '</div>'+
     '</div>'+missList;
 }
+
 function nextLevel(id){
   const i=LEVELS.findIndex(function(x){return x.id===id;});
   if(i>=0&&i<LEVELS.length-1)startLevel(LEVELS[i+1].id);
@@ -566,6 +786,7 @@ function goHome(){
     '<button class="b" onclick="showSettings()">\u2699\ufe0f Settings</button></div>'+
     '<div class="foot">son = sun \u00b7 burst = term \u00b7 the R is silent — you know the drills.</div>';
 }
+
 function showLevels(){
   if(GAME){cancelAnimationFrame(GAME.raf);clearTimeout(GAME.tmo);}
   GAME=null;location.hash='levels';
@@ -583,6 +804,7 @@ function showLevels(){
     '<div class="meta">Career Mode</div><span></span></div>'+rows+
     '<div class="foot">Earn at least \u2605 to unlock the next level.</div>';
 }
+
 function showRef(){
   if(GAME){cancelAnimationFrame(GAME.raf);clearTimeout(GAME.tmo);}GAME=null;
   const cards=VORDER.map(function(k){
@@ -602,12 +824,13 @@ function showRef(){
     '\u2022 <b>/e/ hides in spellings</b> — head (ea), said (ai), friend (ie).<br>'+
     '\u2022 <b>/\u0259/ never carries stress</b> — CAM-uh-ruh.'+
     '</div>'+
-    '<div class="h2">Tip</div><div class="card note">On iPhone or Android, open the share menu and choose '+
-    '<b>Add to Home Screen</b> — Vowel Quest gets its own app icon.</div>';
+    '<div class="h2">Tip</div><div class="card note">On iPhone, Android or PC, bookmark this page or choose '+
+    '<b>Add to Home Screen</b> — Vowel Quest runs instantly like an app.</div>';
   document.getElementById('app').innerHTML=
     '<div class="topbar"><button class="back" onclick="goHome()">\u2039 Home</button>'+
     '<div class="meta">The Sounds</div><span></span></div>'+cards+facts;
 }
+
 function showSettings(){
   if(GAME){cancelAnimationFrame(GAME.raf);clearTimeout(GAME.tmo);}GAME=null;
   document.getElementById('app').innerHTML=
@@ -619,7 +842,7 @@ function showSettings(){
         '<button class="seg '+(SETTINGS.voice==='auto'?'on':'')+'" onclick="setVoice(\'auto\')">Studio voice + device</button>'+
         '<button class="seg '+(SETTINGS.voice==='browser'?'on':'')+'" onclick="setVoice(\'browser\')">Device only</button>'+
       '</div></div>'+
-      '<div class="note">Studio voice: the recorded British narrator (lesson-two words). Device voice: your phone\u2019s built-in speech (used automatically for lesson-one words).</div>'+
+      '<div class="note">Studio voice: recorded British narrator (lesson-two words). Device voice: phone/PC built-in speech (used automatically for lesson-one words).</div>'+
       '<div class="setrow"><div class="setlab">\ud83d\udc22 Speed</div>'+
       '<div class="segs">'+
         '<button class="seg '+(SETTINGS.rate===1?'on':'')+'" onclick="setRate(1)">Normal</button>'+
@@ -629,6 +852,7 @@ function showSettings(){
       '<button class="b danger" onclick="resetProg()">Reset</button></div>'+
     '</div>';
 }
+
 function setVoice(v){SETTINGS.voice=v;saveSettings();showSettings();}
 function setRate(r){SETTINGS.rate=r;saveSettings();showSettings();}
 function resetProg(){
@@ -640,5 +864,5 @@ function resetProg(){
 /* boot */
 goHome();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a4319d228fe628eb',t:'MTc5MDc1NDM4Ng=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</body>
 </html>
